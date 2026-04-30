@@ -3,5 +3,5 @@ pandas
 pdfplumber
 plotly
 openpyxl
-kaleido==0.1.0post1
 xlsxwriter
+kaleido
