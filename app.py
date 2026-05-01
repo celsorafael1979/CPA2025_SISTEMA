@@ -121,6 +121,12 @@ elif menu == "📊 Análise de Gráficos":
         tipo = st.sidebar.selectbox("📈 Tipo de Visualização:", ["Barra", "Linha", "Pizza"])
         ordem = st.sidebar.selectbox("↕️ Ordenar por:", ["Original", "Lógica (Pos→Neg)", "Crescente", "Decrescente"])
 
+        st.sidebar.divider()
+        st.sidebar.subheader("🎨 Configurações de Tamanho")
+        c_width = st.sidebar.slider("Largura (px)", 400, 1200, 1000)
+        c_height = st.sidebar.slider("Altura (px)", 300, 1000, 700)
+        show_labels = st.sidebar.checkbox("Mostrar Valores no Gráfico", value=True)
+
         if segs:
             df_q = df[df["Pergunta"] == perg].copy()
             ops = df_q[df_q["Segmento"].isin(segs)]["Opcao"].unique()
@@ -148,13 +154,20 @@ elif menu == "📊 Análise de Gráficos":
             c_order = df_plot["Opcao"].unique().tolist()
             
             # Gráfico
-            titulo = f"<b>{dim}</b><br>{perg}"
-            if tipo == "Linha": fig = px.line(df_plot, x="Opcao", y="Percent_Num", color="Segmento", markers=True, category_orders={"Opcao": c_order}, title=titulo)
-            elif tipo == "Barra": fig = px.bar(df_plot, x="Opcao", y="Percent_Num", color="Segmento", barmode="group", text="Percent_Num", category_orders={"Opcao": c_order}, title=titulo)
-            else: fig = px.pie(df_plot, names="Opcao", values="Quantidade", facet_col="Segmento", facet_col_wrap=2, title=titulo)
+            titulo = f"<b>{dim}</b><br><sup>{perg}</sup>"
+            if tipo == "Linha":
+                fig = px.line(df_plot, x="Opcao", y="Percent_Num", color="Segmento", markers=True, category_orders={"Opcao": c_order}, title=titulo)
+                if show_labels:
+                    fig.update_traces(textposition="top center", texttemplate='%{y:.1f}%', mode="lines+markers+text")
+            elif tipo == "Barra":
+                fig = px.bar(df_plot, x="Opcao", y="Percent_Num", color="Segmento", barmode="group", category_orders={"Opcao": c_order}, title=titulo, text_auto='.1f' if show_labels else False)
+            else:
+                fig = px.pie(df_plot, names="Opcao", values="Quantidade", facet_col="Segmento", facet_col_wrap=2, title=titulo)
+                if show_labels:
+                    fig.update_traces(textinfo='percent+label')
             
-            fig.update_layout(margin=dict(t=100), yaxis_title="%", xaxis_title="")
-            st.plotly_chart(fig, use_container_width=True)
+            fig.update_layout(width=c_width, height=c_height, margin=dict(t=100), yaxis_title="%", xaxis_title="")
+            st.plotly_chart(fig, use_container_width=False)
             
             # Exportação
             c1, c2 = st.columns(2)
@@ -163,5 +176,5 @@ elif menu == "📊 Análise de Gráficos":
             with c2:
                 st.download_button("🌐 Baixar HTML", fig.to_html(include_plotlyjs='cdn'), "grafico.html")
             
-            st.info("💡 **Dica para Imagem HD**: Clique no ícone da **CÂMERA** no canto superior do gráfico para salvar a foto nítida para o Word.")
+            st.info("💡 **Dica para Imagem HD**: Ajuste o tamanho acima e clique no ícone da **CÂMERA** no canto superior do gráfico. A imagem virá com título e medidas exatas.")
             st.dataframe(df_plot[["Segmento", "Opcao", "Quantidade", "Percent_Num"]], use_container_width=True)
