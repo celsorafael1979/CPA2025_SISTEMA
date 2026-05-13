@@ -22,18 +22,28 @@ st.markdown("""
 if "df_master" not in st.session_state: st.session_state["df_master"] = None
 
 ORDEM_LOGICA = ["Concordo totalmente", "Concordo parcialmente", "Neutro", "Discordo parcialmente", "Discordo totalmente", "Não sei", "Não se aplica"]
+SENTIMENT_MAP = {
+    "Concordo totalmente": "Positiva",
+    "Concordo parcialmente": "Positiva",
+    "Neutro": "Neutro",
+    "Discordo parcialmente": "Negativa",
+    "Discordo totalmente": "Negativa"
+}
+SENTIMENT_COLORS = {"Positiva": "#2ecc71", "Neutro": "#f1c40f", "Negativa": "#e74c3c"}
 
 def parse_pdf_bytes(file_bytes, filename="PDF"):
     data = []
     try:
         with pdfplumber.open(file_bytes) as pdf:
             segment = "Desconhecido"
+            campus = "Desconhecido"
             first_text = pdf.pages[0].extract_text()
             if first_text:
                 for line in first_text.split('\n'):
                     if "- Segmento:" in line:
                         segment = line.split("Segmento:")[1].strip()
-                        break
+                    if "- Campus:" in line:
+                        campus = line.split("Campus:")[1].strip()
             cur_dim = "Geral"
             pos = 0
             for page in pdf.pages:
@@ -55,7 +65,7 @@ def parse_pdf_bytes(file_bytes, filename="PDF"):
                                     parts = next_l.split(' ')
                                     if len(parts) >= 2 and parts[-1].isdigit():
                                         data.append({
-                                            "Segmento": segment, "Dimensao": cur_dim, "ID": qid,
+                                            "Campus": campus, "Segmento": segment, "Dimensao": cur_dim, "ID": qid,
                                             "Pergunta": qtxt, "Opcao": " ".join(parts[:-1]).strip(),
                                             "Quantidade": int(parts[-1]), "Ordem_Ref": pos
                                         })
@@ -92,17 +102,16 @@ if menu == "📤 Enviar Arquivos":
             if all_records:
                 df = pd.DataFrame(all_records)
                 df["Pergunta"] = df["Pergunta"].str.replace(r'\s+', ' ', regex=True).str.strip()
-                # Consolidação para evitar duplicatas
-                df = df.groupby(["Segmento", "ID", "Pergunta", "Opcao"], as_index=False).agg({"Quantidade": "sum", "Ordem_Ref": "min", "Dimensao": "first"})
+                df = df.groupby(["Campus", "Segmento", "ID", "Pergunta", "Opcao"], as_index=False).agg({"Quantidade": "sum", "Ordem_Ref": "min", "Dimensao": "first"})
                 st.session_state["df_master"] = df
-                st.success(f"✅ Sucesso! {len(df['Segmento'].unique())} segmentos e {len(df['ID'].unique())} perguntas identificadas.")
+                st.success(f"✅ Sucesso! {len(df['Campus'].unique())} campus, {len(df['Segmento'].unique())} segmentos e {len(df['ID'].unique())} perguntas identificadas.")
             else: st.error("Não foi possível extrair dados dos arquivos.")
         else: st.warning("Por favor, selecione ao menos um arquivo.")
 
     if st.session_state["df_master"] is not None:
         st.divider()
         st.subheader("📋 Resumo dos Dados Carregados")
-        resumo = st.session_state["df_master"].groupby("Segmento")["ID"].nunique().reset_index(name="Qtd Perguntas")
+        resumo = st.session_state["df_master"].groupby(["Campus", "Segmento"])["ID"].nunique().reset_index(name="Qtd Perguntas")
         st.table(resumo)
 
 elif menu == "📊 Análise de Gráficos":
@@ -110,71 +119,147 @@ elif menu == "📊 Análise de Gráficos":
         st.warning("⚠️ Nenhum dado carregado. Vá em 'Enviar Arquivos' primeiro.")
     else:
         df = st.session_state["df_master"]
-        
+
         st.sidebar.divider()
-        dim = st.sidebar.selectbox("📂 Dimensão:", sorted(df["Dimensao"].unique()))
-        df_dim = df[df["Dimensao"] == dim]
+        campus_selecionado = st.sidebar.selectbox("🏛️ Campus:", sorted(df["Campus"].unique()))
+        df_campus = df[df["Campus"] == campus_selecionado]
+        dim = st.sidebar.selectbox("📂 Dimensão:", sorted(df_campus["Dimensao"].unique()))
+        df_dim = df_campus[df_campus["Dimensao"] == dim]
         perg = st.sidebar.selectbox("🎯 Pergunta:", sorted(df_dim["Pergunta"].unique()))
-        segs_disp = sorted(df[df["Pergunta"] == perg]["Segmento"].unique())
+        segs_disp = sorted(df_campus[df_campus["Pergunta"] == perg]["Segmento"].unique())
         segs = st.sidebar.multiselect("👥 Segmentos:", segs_disp, default=segs_disp)
-        
+
+        opcoes_disp = sorted(df_campus[df_campus["Pergunta"] == perg]["Opcao"].unique(), key=lambda x: ORDEM_LOGICA.index(x) if x in ORDEM_LOGICA else 99)
+        opcoes_selecionadas = st.sidebar.multiselect("📝 Opções de Resposta:", opcoes_disp, default=opcoes_disp)
+
         tipo = st.sidebar.selectbox("📈 Tipo de Visualização:", ["Barra", "Linha", "Pizza"])
         ordem = st.sidebar.selectbox("↕️ Ordenar por:", ["Original", "Lógica (Pos→Neg)", "Crescente", "Decrescente"])
 
         st.sidebar.divider()
+        st.sidebar.subheader("⚙️ Opções de Visualização")
+        formato_valor = st.sidebar.radio("Mostrar Valores Como:", ["Porcentagem", "Absoluto"])
+        campo_calculado = st.sidebar.checkbox("Mostrar apenas Média dos Segmentos", value=False)
+        agrupar_sentimento = st.sidebar.checkbox("Agrupar por Sentimento (Pos/Neu/Neg)", value=False)
+
+        st.sidebar.divider()
         st.sidebar.subheader("🎨 Configurações de Tamanho")
-        c_width = st.sidebar.slider("Largura (px)", 400, 1200, 1000)
-        c_height = st.sidebar.slider("Altura (px)", 300, 1000, 700)
+        c_width = st.sidebar.slider("Largura (px)", 400, 1400, 1000)
+        c_height = st.sidebar.slider("Altura (px)", 300, 1200, 700)
         show_labels = st.sidebar.checkbox("Mostrar Valores no Gráfico", value=True)
 
-        if segs:
-            df_q = df[df["Pergunta"] == perg].copy()
-            ops = df_q[df_q["Segmento"].isin(segs)]["Opcao"].unique()
+        def preparar_dados():
+            """Prepara e retorna o df_plot e c_order com base nos filtros selecionados."""
+            if not segs or not opcoes_selecionadas:
+                return None, None
+            df_q = df_campus[df_campus["Pergunta"] == perg].copy()
+            df_q = df_q[df_q["Opcao"].isin(opcoes_selecionadas)]
+            ops = df_q["Opcao"].unique()
             template = pd.MultiIndex.from_product([segs, ops], names=["Segmento", "Opcao"]).to_frame(index=False)
-            df_plot = pd.merge(template, df_q, on=["Segmento", "Opcao"], how="left").fillna(0)
-            
-            # Lógica de Ordenação
+            df_p = pd.merge(template, df_q, on=["Segmento", "Opcao"], how="left").fillna(0)
+
             if ordem == "Original":
                 o_map = df_q.groupby("Opcao")["Ordem_Ref"].min().to_dict()
-                df_plot = df_plot.sort_values(["Segmento", "Opcao"], key=lambda x: x.map(o_map) if x.name == "Opcao" else x)
+                df_p = df_p.sort_values(["Segmento", "Opcao"], key=lambda x: x.map(o_map) if x.name == "Opcao" else x)
             elif ordem == "Lógica (Pos→Neg)":
-                df_plot["Opcao"] = pd.Categorical(df_plot["Opcao"], categories=[o for o in ORDEM_LOGICA if o in ops] + [x for x in ops if x not in ORDEM_LOGICA], ordered=True)
-                df_plot = df_plot.sort_values(["Segmento", "Opcao"])
+                df_p["Opcao"] = pd.Categorical(df_p["Opcao"], categories=[o for o in ORDEM_LOGICA if o in ops] + [x for x in ops if x not in ORDEM_LOGICA], ordered=True)
+                df_p = df_p.sort_values(["Segmento", "Opcao"])
             elif ordem == "Crescente":
-                o_val = df_plot.groupby("Opcao")["Quantidade"].mean().sort_values().index
-                df_plot["Opcao"] = pd.Categorical(df_plot["Opcao"], categories=o_val, ordered=True)
-                df_plot = df_plot.sort_values(["Segmento", "Opcao"])
+                o_val = df_p.groupby("Opcao")["Quantidade"].mean().sort_values().index
+                df_p["Opcao"] = pd.Categorical(df_p["Opcao"], categories=o_val, ordered=True)
+                df_p = df_p.sort_values(["Segmento", "Opcao"])
             elif ordem == "Decrescente":
-                o_val = df_plot.groupby("Opcao")["Quantidade"].mean().sort_values(ascending=False).index
-                df_plot["Opcao"] = pd.Categorical(df_plot["Opcao"], categories=o_val, ordered=True)
-                df_plot = df_plot.sort_values(["Segmento", "Opcao"])
+                o_val = df_p.groupby("Opcao")["Quantidade"].mean().sort_values(ascending=False).index
+                df_p["Opcao"] = pd.Categorical(df_p["Opcao"], categories=o_val, ordered=True)
+                df_p = df_p.sort_values(["Segmento", "Opcao"])
 
-            df_plot["Total"] = df_plot.groupby("Segmento")["Quantidade"].transform("sum")
-            df_plot["Percent_Num"] = (df_plot["Quantidade"] / df_plot["Total"] * 100).fillna(0).round(2)
-            c_order = df_plot["Opcao"].unique().tolist()
-            
-            # Gráfico
-            titulo = f"<b>{dim}</b><br><sup>{perg}</sup>"
-            if tipo == "Linha":
-                fig = px.line(df_plot, x="Opcao", y="Percent_Num", color="Segmento", markers=True, category_orders={"Opcao": c_order}, title=titulo)
-                if show_labels:
-                    fig.update_traces(textposition="top center", texttemplate='%{y:.1f}%', mode="lines+markers+text")
-            elif tipo == "Barra":
-                fig = px.bar(df_plot, x="Opcao", y="Percent_Num", color="Segmento", barmode="group", category_orders={"Opcao": c_order}, title=titulo, text_auto='.1f' if show_labels else False)
+            df_p["Total"] = df_p.groupby("Segmento")["Quantidade"].transform("sum")
+            df_p["Percent_Num"] = (df_p["Quantidade"] / df_p["Total"] * 100).fillna(0).round(2)
+
+            c_ord = df_p["Opcao"].unique().tolist()
+
+            if agrupar_sentimento:
+                df_p["Opcao"] = df_p["Opcao"].map(SENTIMENT_MAP).fillna(df_p["Opcao"])
+                df_p = df_p.groupby(["Segmento", "Opcao"], as_index=False).agg({"Quantidade": "sum", "Total": "first"})
+                df_p["Percent_Num"] = (df_p["Quantidade"] / df_p["Total"] * 100).fillna(0).round(2)
+                s_order = ["Positiva", "Neutro", "Negativa"]
+                ops_atuais = df_p["Opcao"].unique()
+                c_ord = [o for o in s_order if o in ops_atuais] + [o for o in ops_atuais if o not in s_order]
+
+            if campo_calculado:
+                df_p = df_p.groupby("Opcao", as_index=False).agg({"Quantidade": "mean", "Percent_Num": "mean"})
+                df_p["Segmento"] = "<br>".join(segs)
+
+            c_ord = df_p["Opcao"].unique().tolist()
+            return df_p, c_ord
+
+        def montar_grafico(df_plot, c_order, horizontal=False):
+            """Monta e retorna a figura Plotly."""
+            titulo = f"<b>{campus_selecionado} - {dim}</b><br><sup>{perg}</sup>"
+            y_col = "Percent_Num" if formato_valor == "Porcentagem" else "Quantidade"
+            y_label = "%" if formato_valor == "Porcentagem" else "Quantidade"
+
+            if formato_valor == "Porcentagem":
+                text_template = '%{x:.1f}%' if horizontal else '%{y:.1f}%'
+                text_auto = '.1f'
             else:
-                fig = px.pie(df_plot, names="Opcao", values="Quantidade", facet_col="Segmento", facet_col_wrap=2, title=titulo)
+                if horizontal:
+                    text_template = '%{x:.1f}' if campo_calculado else '%{x:.0f}'
+                else:
+                    text_template = '%{y:.1f}' if campo_calculado else '%{y:.0f}'
+                text_auto = '.1f' if campo_calculado else '.0f'
+
+            color_col = "Opcao" if agrupar_sentimento and campo_calculado else "Segmento"
+            color_map = SENTIMENT_COLORS if color_col == "Opcao" else None
+
+            if tipo == "Linha":
+                if horizontal:
+                    fig = px.line(df_plot, y="Opcao", x=y_col, color="Segmento", markers=True,
+                                  category_orders={"Opcao": c_order}, title=titulo)
+                else:
+                    fig = px.line(df_plot, x="Opcao", y=y_col, color="Segmento", markers=True,
+                                  category_orders={"Opcao": c_order}, title=titulo)
                 if show_labels:
-                    fig.update_traces(textinfo='percent+label')
-            
-            fig.update_layout(width=c_width, height=c_height, margin=dict(t=100), yaxis_title="%", xaxis_title="")
+                    fig.update_traces(
+                        textposition="middle right" if horizontal else "top center",
+                        texttemplate=text_template,
+                        mode="lines+markers+text"
+                    )
+            elif tipo == "Barra":
+                if horizontal:
+                    fig = px.bar(df_plot, y="Opcao", x=y_col, color=color_col, barmode="group",
+                                 category_orders={"Opcao": c_order}, title=titulo, orientation="h",
+                                 color_discrete_map=color_map,
+                                 text_auto=text_auto if show_labels else False)
+                else:
+                    fig = px.bar(df_plot, x="Opcao", y=y_col, color=color_col, barmode="group",
+                                 category_orders={"Opcao": c_order}, title=titulo,
+                                 color_discrete_map=color_map,
+                                 text_auto=text_auto if show_labels else False)
+            else:
+                fig = px.pie(df_plot, names="Opcao", values=y_col, facet_col="Segmento", facet_col_wrap=2, title=titulo)
+                if show_labels:
+                    fig.update_traces(textinfo='value+label' if formato_valor == "Absoluto" else 'percent+label')
+
+            if horizontal:
+                fig.update_layout(width=c_width, height=c_height, margin=dict(t=100, r=50),
+                                  xaxis_title=y_label, yaxis_title="")
+            else:
+                fig.update_layout(width=c_width, height=c_height, margin=dict(t=100, r=300),
+                                  yaxis_title=y_label, xaxis_title="")
+            return fig
+
+        # --- Gráfico ---
+        df_plot, c_order = preparar_dados()
+
+        if df_plot is not None:
+            fig = montar_grafico(df_plot, c_order, horizontal=False)
             st.plotly_chart(fig, use_container_width=False)
-            
-            # Exportação
             c1, c2 = st.columns(2)
             with c1:
-                st.download_button("📊 Baixar Excel", to_excel(df_plot[["Segmento", "Opcao", "Quantidade", "Percent_Num"]]), "cpa_v2.xlsx")
+                st.download_button("📊 Baixar Excel", to_excel(df_plot[["Segmento", "Opcao", "Quantidade", "Percent_Num"]]), "cpa_resultado.xlsx")
             with c2:
                 st.download_button("🌐 Baixar HTML", fig.to_html(include_plotlyjs='cdn'), "grafico.html")
-            
-            st.info("💡 **Dica para Imagem HD**: Ajuste o tamanho acima e clique no ícone da **CÂMERA** no canto superior do gráfico. A imagem virá com título e medidas exatas.")
+            st.info("💡 **Dica para Imagem HD**: Ajuste o tamanho acima e clique no ícone da **CÂMERA** no canto superior do gráfico.")
             st.dataframe(df_plot[["Segmento", "Opcao", "Quantidade", "Percent_Num"]], use_container_width=True)
+        else:
+            st.warning("⚠️ Selecione ao menos um segmento e uma opção de resposta.")
