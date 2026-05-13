@@ -121,11 +121,14 @@ elif menu == "📊 Análise de Gráficos":
         df = st.session_state["df_master"]
 
         st.sidebar.divider()
-        campus_selecionado = st.sidebar.selectbox("🏛️ Campus:", sorted(df["Campus"].unique()))
-        df_campus = df[df["Campus"] == campus_selecionado]
-        dim = st.sidebar.selectbox("📂 Dimensão:", sorted(df_campus["Dimensao"].unique()))
-        df_dim = df_campus[df_campus["Dimensao"] == dim]
+        dim = st.sidebar.selectbox("📂 Dimensão:", sorted(df["Dimensao"].unique()))
+        df_dim = df[df["Dimensao"] == dim]
         perg = st.sidebar.selectbox("🎯 Pergunta:", sorted(df_dim["Pergunta"].unique()))
+
+        campus_disp = sorted(df[df["Pergunta"] == perg]["Campus"].unique())
+        campus_selecionados = st.sidebar.multiselect("🏛️ Campus:", campus_disp, default=campus_disp)
+
+        df_campus = df[df["Campus"].isin(campus_selecionados)] if campus_selecionados else df.iloc[:0]
         segs_disp = sorted(df_campus[df_campus["Pergunta"] == perg]["Segmento"].unique())
         segs = st.sidebar.multiselect("👥 Segmentos:", segs_disp, default=segs_disp)
 
@@ -149,10 +152,15 @@ elif menu == "📊 Análise de Gráficos":
 
         def preparar_dados():
             """Prepara e retorna o df_plot e c_order com base nos filtros selecionados."""
-            if not segs or not opcoes_selecionadas:
+            if not segs or not opcoes_selecionadas or not campus_selecionados:
                 return None, None
             df_q = df_campus[df_campus["Pergunta"] == perg].copy()
             df_q = df_q[df_q["Opcao"].isin(opcoes_selecionadas)]
+            df_q = df_q[df_q["Segmento"].isin(segs)]
+            # Soma os valores de todos os campus selecionados por Segmento + Opção
+            df_q = df_q.groupby(["Segmento", "Opcao"], as_index=False).agg(
+                {"Quantidade": "sum", "Ordem_Ref": "min"}
+            )
             ops = df_q["Opcao"].unique()
             template = pd.MultiIndex.from_product([segs, ops], names=["Segmento", "Opcao"]).to_frame(index=False)
             df_p = pd.merge(template, df_q, on=["Segmento", "Opcao"], how="left").fillna(0)
@@ -194,7 +202,11 @@ elif menu == "📊 Análise de Gráficos":
 
         def montar_grafico(df_plot, c_order, horizontal=False):
             """Monta e retorna a figura Plotly."""
-            titulo = f"<b>{campus_selecionado} - {dim}</b><br><sup>{perg}</sup>"
+            if len(campus_selecionados) == 1:
+                label_campus = campus_selecionados[0]
+            else:
+                label_campus = f"{len(campus_selecionados)} campus combinados"
+            titulo = f"<b>{label_campus} - {dim}</b><br><sup>{perg}</sup>"
             y_col = "Percent_Num" if formato_valor == "Porcentagem" else "Quantidade"
             y_label = "%" if formato_valor == "Porcentagem" else "Quantidade"
 
@@ -262,4 +274,7 @@ elif menu == "📊 Análise de Gráficos":
             st.info("💡 **Dica para Imagem HD**: Ajuste o tamanho acima e clique no ícone da **CÂMERA** no canto superior do gráfico.")
             st.dataframe(df_plot[["Segmento", "Opcao", "Quantidade", "Percent_Num"]], use_container_width=True)
         else:
-            st.warning("⚠️ Selecione ao menos um segmento e uma opção de resposta.")
+            if not campus_selecionados:
+                st.warning("⚠️ Selecione ao menos um campus.")
+            else:
+                st.warning("⚠️ Selecione ao menos um segmento e uma opção de resposta.")
