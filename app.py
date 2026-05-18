@@ -265,7 +265,12 @@ elif menu == "📊 Análise de Gráficos":
 
         if df_plot is not None:
             fig = montar_grafico(df_plot, c_order, horizontal=False)
-            st.plotly_chart(fig, use_container_width=False)
+            # Nome do arquivo da câmera = dimensão + pergunta (sanitizado)
+            import re as _re
+            _nome_base = f"{dim} - {perg}"
+            _nome_arquivo = _re.sub(r'[\\/*?:"<>|]', '', _nome_base)[:150]
+            _config = {"toImageButtonOptions": {"filename": _nome_arquivo}}
+            st.plotly_chart(fig, use_container_width=False, config=_config)
             c1, c2 = st.columns(2)
             with c1:
                 st.download_button("📊 Baixar Excel", to_excel(df_plot[["Segmento", "Opcao", "Quantidade", "Percent_Num"]]), "cpa_resultado.xlsx")
