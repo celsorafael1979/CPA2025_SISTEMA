@@ -150,6 +150,15 @@ elif menu == "📊 Análise de Gráficos":
         c_height = st.sidebar.slider("Altura (px)", 300, 1200, 700)
         show_labels = st.sidebar.checkbox("Mostrar Valores no Gráfico", value=True)
 
+        st.sidebar.divider()
+        st.sidebar.subheader("🔡 Tamanho das Fontes")
+        font_titulo    = st.sidebar.slider("Título",        8, 40, 14)
+        font_subtitulo = st.sidebar.slider("Subtítulo",     6, 30, 11)
+        font_eixo      = st.sidebar.slider("Rótulo dos Eixos", 8, 36, 13)
+        font_ticks     = st.sidebar.slider("Escala dos Eixos",  8, 36, 12)
+        font_legenda   = st.sidebar.slider("Legenda",        8, 36, 12)
+        font_rotulos   = st.sidebar.slider("Valores nas Barras", 8, 36, 12)
+
         def preparar_dados():
             """Prepara e retorna o df_plot e c_order com base nos filtros selecionados."""
             if not segs or not opcoes_selecionadas or not campus_selecionados:
@@ -253,11 +262,30 @@ elif menu == "📊 Análise de Gráficos":
                     fig.update_traces(textinfo='value+label' if formato_valor == "Absoluto" else 'percent+label')
 
             if horizontal:
-                fig.update_layout(width=c_width, height=c_height, margin=dict(t=100, r=50),
-                                  xaxis_title=y_label, yaxis_title="")
+                fig.update_layout(
+                    width=c_width, height=c_height, margin=dict(t=100, r=50),
+                    xaxis_title=y_label, yaxis_title="",
+                    title_font_size=font_titulo,
+                    xaxis=dict(title_font_size=font_eixo, tickfont_size=font_ticks),
+                    yaxis=dict(title_font_size=font_eixo, tickfont_size=font_ticks),
+                    legend=dict(font_size=font_legenda),
+                )
             else:
-                fig.update_layout(width=c_width, height=c_height, margin=dict(t=100, r=300),
-                                  yaxis_title=y_label, xaxis_title="")
+                fig.update_layout(
+                    width=c_width, height=c_height, margin=dict(t=100, r=300),
+                    yaxis_title=y_label, xaxis_title="",
+                    title_font_size=font_titulo,
+                    xaxis=dict(title_font_size=font_eixo, tickfont_size=font_ticks),
+                    yaxis=dict(title_font_size=font_eixo, tickfont_size=font_ticks),
+                    legend=dict(font_size=font_legenda),
+                )
+            # Aplica tamanho de fonte nos rótulos de dados (barras/linhas)
+            fig.update_traces(textfont_size=font_rotulos)
+            # Ajusta o subtítulo (texto dentro do <sup>)
+            fig.update_layout(title=dict(
+                text=titulo,
+                font=dict(size=font_titulo),
+            ))
             return fig
 
         # --- Gráfico ---
