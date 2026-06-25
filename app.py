@@ -6,6 +6,7 @@ import re
 import plotly.express as px
 from glob import glob
 from io import BytesIO
+from supabase import create_client, Client
 
 st.set_page_config(page_title="Sistema CPA 2025 - UEAP", layout="wide")
 
@@ -18,8 +19,97 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# Conexão e Funções do Supabase
+@st.cache_resource
+def get_supabase_client() -> Client:
+    if "supabase" in st.secrets:
+        url = st.secrets["supabase"].get("url")
+        key = st.secrets["supabase"].get("key")
+        if url and key:
+            try:
+                return create_client(url, key)
+            except Exception as e:
+                st.error(f"Erro ao conectar ao Supabase: {e}")
+    return None
+
+def load_data_from_supabase(client: Client):
+    try:
+        all_data = []
+        limit = 1000
+        offset = 0
+        while True:
+            response = client.table("cpa_dados").select("*").range(offset, offset + limit - 1).execute()
+            if not response.data:
+                break
+            all_data.extend(response.data)
+            if len(response.data) < limit:
+                break
+            offset += limit
+        
+        if not all_data:
+            return None
+        
+        df = pd.DataFrame(all_data)
+        df = df.rename(columns={
+            "campus": "Campus",
+            "segmento": "Segmento",
+            "dimensao": "Dimensao",
+            "id_pergunta": "ID",
+            "pergunta": "Pergunta",
+            "opcao": "Opcao",
+            "quantidade": "Quantidade",
+            "ordem_ref": "Ordem_Ref"
+        })
+        df["Quantidade"] = df["Quantidade"].astype(int)
+        df["Ordem_Ref"] = df["Ordem_Ref"].astype(int)
+        df = df.sort_values(by=["Campus", "Segmento", "ID", "Ordem_Ref"])
+        return df
+    except Exception as e:
+        st.error(f"Erro ao carregar dados do Supabase: {e}")
+        return None
+
+def delete_all_data_from_supabase(client: Client):
+    try:
+        client.table("cpa_dados").delete().neq("id", 0).execute()
+        return True
+    except Exception as e:
+        st.error(f"Erro ao limpar dados do Supabase: {e}")
+        return False
+
+def save_data_to_supabase(client: Client, df: pd.DataFrame):
+    try:
+        records = []
+        for _, row in df.iterrows():
+            records.append({
+                "campus": row["Campus"],
+                "segmento": row["Segmento"],
+                "dimensao": row["Dimensao"],
+                "id_pergunta": str(row["ID"]),
+                "pergunta": row["Pergunta"],
+                "opcao": row["Opcao"],
+                "quantidade": int(row["Quantidade"]),
+                "ordem_ref": int(row["Ordem_Ref"])
+            })
+        
+        batch_size = 1000
+        for i in range(0, len(records), batch_size):
+            batch = records[i:i+batch_size]
+            client.table("cpa_dados").upsert(batch, on_conflict="campus,segmento,id_pergunta,opcao").execute()
+        return True
+    except Exception as e:
+        st.error(f"Erro ao salvar dados no Supabase: {e}")
+        return False
+
+
 # Inicialização de Estado
-if "df_master" not in st.session_state: st.session_state["df_master"] = None
+if "df_master" not in st.session_state:
+    st.session_state["df_master"] = None
+
+supabase_client = get_supabase_client()
+
+# Carrega do banco automaticamente no primeiro acesso
+if st.session_state["df_master"] is None and supabase_client:
+    st.session_state["df_master"] = load_data_from_supabase(supabase_client)
 
 ORDEM_LOGICA = ["Concordo totalmente", "Concordo parcialmente", "Neutro", "Discordo parcialmente", "Discordo totalmente", "Não sei", "Não se aplica"]
 SENTIMENT_MAP = {
@@ -83,6 +173,16 @@ def to_excel(df):
     return output.getvalue()
 
 st.sidebar.title("🧭 Painel CPA")
+if supabase_client:
+    st.sidebar.markdown(
+        '<div style="background-color: #d4edda; color: #155724; padding: 10px; border-radius: 5px; margin-bottom: 20px; font-weight: bold; text-align: center; border: 1px solid #c3e6cb;">⚡ Supabase Conectado</div>',
+        unsafe_allow_html=True
+    )
+else:
+    st.sidebar.markdown(
+        '<div style="background-color: #fff3cd; color: #856404; padding: 10px; border-radius: 5px; margin-bottom: 20px; font-weight: bold; text-align: center; border: 1px solid #ffeeba;">⚠️ Modo Local (Sem Banco)</div>',
+        unsafe_allow_html=True
+    )
 menu = st.sidebar.radio("Navegação:", ["📤 Enviar Arquivos", "📊 Análise de Gráficos"])
 
 if menu == "📤 Enviar Arquivos":
@@ -103,8 +203,22 @@ if menu == "📤 Enviar Arquivos":
                 df = pd.DataFrame(all_records)
                 df["Pergunta"] = df["Pergunta"].str.replace(r'\s+', ' ', regex=True).str.strip()
                 df = df.groupby(["Campus", "Segmento", "ID", "Pergunta", "Opcao"], as_index=False).agg({"Quantidade": "sum", "Ordem_Ref": "min", "Dimensao": "first"})
-                st.session_state["df_master"] = df
-                st.success(f"✅ Sucesso! {len(df['Campus'].unique())} campus, {len(df['Segmento'].unique())} segmentos e {len(df['ID'].unique())} perguntas identificadas.")
+                
+                if supabase_client:
+                    with st.spinner("Limpando dados antigos e salvando no Supabase..."):
+                        if delete_all_data_from_supabase(supabase_client):
+                            if save_data_to_supabase(supabase_client, df):
+                                st.success("✅ Dados salvos com sucesso no banco de dados!")
+                                st.session_state["df_master"] = load_data_from_supabase(supabase_client)
+                            else:
+                                st.warning("⚠️ Ocorreu um erro ao salvar os novos dados no Supabase. Os dados foram carregados apenas temporariamente.")
+                                st.session_state["df_master"] = df
+                        else:
+                            st.warning("⚠️ Não foi possível limpar os dados antigos no Supabase. A operação de salvamento foi cancelada para evitar duplicidade.")
+                            st.session_state["df_master"] = df
+                else:
+                    st.session_state["df_master"] = df
+                    st.success("✅ Dados processados localmente com sucesso.")
             else: st.error("Não foi possível extrair dados dos arquivos.")
         else: st.warning("Por favor, selecione ao menos um arquivo.")
 
@@ -113,6 +227,32 @@ if menu == "📤 Enviar Arquivos":
         st.subheader("📋 Resumo dos Dados Carregados")
         resumo = st.session_state["df_master"].groupby(["Campus", "Segmento"])["ID"].nunique().reset_index(name="Qtd Perguntas")
         st.table(resumo)
+        
+        if supabase_client:
+            st.divider()
+            st.subheader("⚙️ Gerenciamento de Banco de Dados")
+            col_db1, col_db2 = st.columns(2)
+            with col_db1:
+                if st.button("🔄 Sincronizar com o Banco"):
+                    with st.spinner("Sincronizando..."):
+                        df_db = load_data_from_supabase(supabase_client)
+                        if df_db is not None:
+                            st.session_state["df_master"] = df_db
+                            st.success("✅ Dados sincronizados do banco com sucesso!")
+                            st.rerun()
+                        else:
+                            st.info("ℹ️ O banco de dados está vazio.")
+            with col_db2:
+                confirmar_limpar = st.checkbox("Confirmar exclusão permanente dos dados do banco", value=False)
+                if st.button("🗑️ Limpar Banco de Dados", disabled=not confirmar_limpar, type="primary"):
+                    with st.spinner("Excluindo dados..."):
+                        try:
+                            supabase_client.table("cpa_dados").delete().neq("id", 0).execute()
+                            st.session_state["df_master"] = None
+                            st.success("🗑️ Todos os dados do banco foram excluídos!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Erro ao excluir dados: {e}")
 
 elif menu == "📊 Análise de Gráficos":
     if st.session_state["df_master"] is None:
