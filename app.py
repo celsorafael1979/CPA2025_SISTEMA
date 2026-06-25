@@ -183,7 +183,7 @@ else:
         '<div style="background-color: #fff3cd; color: #856404; padding: 10px; border-radius: 5px; margin-bottom: 20px; font-weight: bold; text-align: center; border: 1px solid #ffeeba;">⚠️ Modo Local (Sem Banco)</div>',
         unsafe_allow_html=True
     )
-menu = st.sidebar.radio("Navegação:", ["📤 Enviar Arquivos", "📊 Análise de Gráficos"])
+menu = st.sidebar.radio("Navegação:", ["📤 Enviar Arquivos", "📊 Análise de Gráficos"], index=1)
 
 if menu == "📤 Enviar Arquivos":
     st.header("📤 Carregamento de Relatórios")
