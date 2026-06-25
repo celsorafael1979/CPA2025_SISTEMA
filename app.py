@@ -289,6 +289,14 @@ elif menu == "📊 Análise de Gráficos":
         c_width = st.sidebar.slider("Largura (px)", 400, 1400, 1000)
         c_height = st.sidebar.slider("Altura (px)", 300, 1200, 700)
         show_labels = st.sidebar.checkbox("Mostrar Valores no Gráfico", value=True)
+        if tipo == "Barra" and show_labels:
+            posicao_rotulos = st.sidebar.selectbox("Posição dos Rótulos", ["Fora das Barras", "Dentro das Barras", "Automático"], index=0)
+            pos_map = {"Fora das Barras": "outside", "Dentro das Barras": "inside", "Automático": "auto"}
+            text_pos = pos_map[posicao_rotulos]
+            force_horizontal = st.sidebar.checkbox("Forçar Rótulos Horizontais (Evita Rotação)", value=True)
+        else:
+            text_pos = "auto"
+            force_horizontal = False
 
         st.sidebar.divider()
         st.sidebar.subheader("🔡 Tamanho das Fontes")
@@ -391,11 +399,15 @@ elif menu == "📊 Análise de Gráficos":
                                  category_orders={"Opcao": c_order}, title=titulo, orientation="h",
                                  color_discrete_map=color_map,
                                  text_auto=text_auto if show_labels else False)
+                    if show_labels:
+                        fig.update_traces(textposition=text_pos, textangle=0 if force_horizontal else None)
                 else:
                     fig = px.bar(df_plot, x="Opcao", y=y_col, color=color_col, barmode="group",
                                  category_orders={"Opcao": c_order}, title=titulo,
                                  color_discrete_map=color_map,
                                  text_auto=text_auto if show_labels else False)
+                    if show_labels:
+                        fig.update_traces(textposition=text_pos, textangle=0 if force_horizontal else None)
             else:
                 fig = px.pie(df_plot, names="Opcao", values=y_col, facet_col="Segmento", facet_col_wrap=2, title=titulo)
                 if show_labels:
