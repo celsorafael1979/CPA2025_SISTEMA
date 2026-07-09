@@ -100,16 +100,62 @@ def save_data_to_supabase(client: Client, df: pd.DataFrame):
         st.error(f"Erro ao salvar dados no Supabase: {e}")
         return False
 
+def load_enade_from_supabase(client: Client):
+    try:
+        all_data = []
+        limit = 1000
+        offset = 0
+        while True:
+            response = client.table("enade_dados").select("*").range(offset, offset + limit - 1).execute()
+            if not response.data:
+                break
+            all_data.extend(response.data)
+            if len(response.data) < limit:
+                break
+            offset += limit
+        
+        if not all_data:
+            return None
+        return pd.DataFrame(all_data)
+    except Exception as e:
+        st.error(f"Erro ao carregar dados ENADE do Supabase: {e}")
+        return None
+
+def save_enade_to_supabase(client: Client, df: pd.DataFrame):
+    try:
+        records = df.to_dict(orient="records")
+        batch_size = 1000
+        for i in range(0, len(records), batch_size):
+            batch = records[i:i+batch_size]
+            client.table("enade_dados").insert(batch).execute()
+        return True
+    except Exception as e:
+        st.error(f"Erro ao salvar dados ENADE no Supabase: {e}")
+        return False
+
+def delete_all_enade_from_supabase(client: Client):
+    try:
+        client.table("enade_dados").delete().neq("id", 0).execute()
+        return True
+    except Exception as e:
+        st.error(f"Erro ao limpar dados ENADE do Supabase: {e}")
+        return False
 
 # Inicialização de Estado
 if "df_master" not in st.session_state:
     st.session_state["df_master"] = None
+
+if "df_enade" not in st.session_state:
+    st.session_state["df_enade"] = None
 
 supabase_client = get_supabase_client()
 
 # Carrega do banco automaticamente no primeiro acesso
 if st.session_state["df_master"] is None and supabase_client:
     st.session_state["df_master"] = load_data_from_supabase(supabase_client)
+
+if st.session_state["df_enade"] is None and supabase_client:
+    st.session_state["df_enade"] = load_enade_from_supabase(supabase_client)
 
 ORDEM_LOGICA = ["Concordo totalmente", "Concordo parcialmente", "Neutro", "Discordo parcialmente", "Discordo totalmente", "Não sei", "Não se aplica"]
 SENTIMENT_MAP = {
@@ -145,6 +191,17 @@ def parse_pdf_bytes(file_bytes, filename="PDF"):
                     m = re.search(r"Pergunta (\d+): (.+)", line)
                     if m:
                         qid, qtxt = m.group(1).strip(), m.group(2).strip()
+                        
+                        # Extrai linhas seguintes que fazem parte da pergunta
+                        k = i + 1
+                        while k < len(lines):
+                            nl = lines[k].strip()
+                            if nl:
+                                if nl.startswith("Total de Respostas:") or nl.startswith("Resposta") or "Dimensão:" in nl or "Pergunta " in nl or re.search(r"(\d+,\d+%)", nl):
+                                    break
+                                qtxt += " " + nl
+                            k += 1
+
                         for j in range(i + 1, len(lines)):
                             if "Pergunta" in lines[j] or "Dimensão" in lines[j]:
                                 if j > i + 2: break
@@ -162,6 +219,17 @@ def parse_pdf_bytes(file_bytes, filename="PDF"):
                                         pos += 1
     except Exception as e: st.error(f"Erro no arquivo {filename}: {e}")
     return data
+
+from parse_enade import parse_enade_pdf
+
+def parse_enade_pdf_bytes(file_bytes, filename="PDF"):
+    # Utiliza o módulo avançado de parser
+    try:
+        return parse_enade_pdf(file_bytes, filename)
+    except Exception as e:
+        import streamlit as st
+        st.error(f"Erro avançado no parser ENADE para {filename}: {e}")
+        return []
 
 def to_excel(df):
     output = BytesIO()
@@ -183,45 +251,184 @@ else:
         '<div style="background-color: #fff3cd; color: #856404; padding: 10px; border-radius: 5px; margin-bottom: 20px; font-weight: bold; text-align: center; border: 1px solid #ffeeba;">⚠️ Modo Local (Sem Banco)</div>',
         unsafe_allow_html=True
     )
-menu = st.sidebar.radio("Navegação:", ["📤 Enviar Arquivos", "📊 Análise de Gráficos"], index=1)
+menu = st.sidebar.radio("Navegação:", ["📤 Enviar Arquivos", "📊 Análise CPA", "📈 Análise ENADE"], index=1)
 
 if menu == "📤 Enviar Arquivos":
     st.header("📤 Carregamento de Relatórios")
-    st.info("Arraste seus arquivos PDF da CPA para começar a análise.")
     
-    arquivos_up = st.file_uploader("Selecione os PDFs", type="pdf", accept_multiple_files=True)
+    tab_cpa, tab_enade = st.tabs(["📄 Relatórios CPA", "📄 Relatórios ENADE"])
     
-    if st.button("🚀 Processar e Estruturar"):
-        if arquivos_up:
-            all_records = []
-            progress = st.progress(0)
-            for i, f in enumerate(arquivos_up):
-                all_records.extend(parse_pdf_bytes(f, f.name))
-                progress.progress((i + 1) / len(arquivos_up))
-            
-            if all_records:
-                df = pd.DataFrame(all_records)
-                df["Pergunta"] = df["Pergunta"].str.replace(r'\s+', ' ', regex=True).str.strip()
-                df = df.groupby(["Campus", "Segmento", "ID", "Pergunta", "Opcao"], as_index=False).agg({"Quantidade": "sum", "Ordem_Ref": "min", "Dimensao": "first"})
+    with tab_cpa:
+        st.info("Arraste seus arquivos PDF da CPA para começar a análise.")
+        arquivos_up = st.file_uploader("Selecione os PDFs da CPA", type="pdf", accept_multiple_files=True, key="cpa_up")
+        
+        if st.button("🚀 Processar e Estruturar", key="btn_cpa"):
+            if arquivos_up:
+                all_records = []
+                progress = st.progress(0)
+                for i, f in enumerate(arquivos_up):
+                    all_records.extend(parse_pdf_bytes(f, f.name))
+                    progress.progress((i + 1) / len(arquivos_up))
                 
-                if supabase_client:
-                    with st.spinner("Limpando dados antigos e salvando no Supabase..."):
-                        if delete_all_data_from_supabase(supabase_client):
-                            if save_data_to_supabase(supabase_client, df):
-                                st.success("✅ Dados salvos com sucesso no banco de dados!")
-                                st.session_state["df_master"] = load_data_from_supabase(supabase_client)
+                if all_records:
+                    df = pd.DataFrame(all_records)
+                    df["Pergunta"] = df["Pergunta"].str.replace(r'\s+', ' ', regex=True).str.strip()
+                    df = df.groupby(["Campus", "Segmento", "ID", "Pergunta", "Opcao"], as_index=False).agg({"Quantidade": "sum", "Ordem_Ref": "min", "Dimensao": "first"})
+                    
+                    if supabase_client:
+                        with st.spinner("Limpando dados antigos e salvando no Supabase..."):
+                            if delete_all_data_from_supabase(supabase_client):
+                                if save_data_to_supabase(supabase_client, df):
+                                    st.success("✅ Dados salvos com sucesso no banco de dados!")
+                                    st.session_state["df_master"] = load_data_from_supabase(supabase_client)
+                                else:
+                                    st.warning("⚠️ Ocorreu um erro ao salvar os novos dados no Supabase. Os dados foram carregados apenas temporariamente.")
+                                    st.session_state["df_master"] = df
                             else:
-                                st.warning("⚠️ Ocorreu um erro ao salvar os novos dados no Supabase. Os dados foram carregados apenas temporariamente.")
+                                st.warning("⚠️ Não foi possível limpar os dados antigos no Supabase. A operação de salvamento foi cancelada para evitar duplicidade.")
                                 st.session_state["df_master"] = df
-                        else:
-                            st.warning("⚠️ Não foi possível limpar os dados antigos no Supabase. A operação de salvamento foi cancelada para evitar duplicidade.")
-                            st.session_state["df_master"] = df
-                else:
-                    st.session_state["df_master"] = df
-                    st.success("✅ Dados processados localmente com sucesso.")
-            else: st.error("Não foi possível extrair dados dos arquivos.")
-        else: st.warning("Por favor, selecione ao menos um arquivo.")
+                    else:
+                        st.session_state["df_master"] = df
+                        st.success("✅ Dados processados localmente com sucesso.")
+                else: st.error("Não foi possível extrair dados dos arquivos.")
+            else: st.warning("Por favor, selecione ao menos um arquivo da CPA.")
 
+    with tab_enade:
+        st.info("Arraste o arquivo PDF dos indicadores do ENADE.")
+        arquivos_enade = st.file_uploader("Selecione os PDFs do ENADE", type="pdf", accept_multiple_files=True, key="enade_up")
+        
+        if st.button("🚀 Processar ENADE", key="btn_enade"):
+            if arquivos_enade:
+                st.info("Iniciando o processamento dos PDFs do ENADE...")
+                all_enade = []
+                import os
+                os.makedirs("debug_pdfs", exist_ok=True)
+                for f in arquivos_enade:
+                    try:
+                        st.write(f"Processando arquivo: {f.name}...")
+                        # Salva o arquivo fisicamente para análise
+                        with open(os.path.join("debug_pdfs", f.name), "wb") as f_out:
+                            f_out.write(f.getvalue())
+                        
+                        f.seek(0) # Volta o cursor do arquivo
+                        registros = parse_enade_pdf_bytes(f, f.name)
+                        st.write(f"Arquivo {f.name} rendeu {len(registros)} registros.")
+                        if registros:
+                            all_enade.extend(registros)
+                    except Exception as e:
+                        st.error(f"Erro ao processar {f.name}: {e}")
+                
+                st.write(f"Total de registros extraídos de todos os arquivos: {len(all_enade)}")
+                if all_enade:
+                    df_enade = pd.DataFrame(all_enade)
+                    st.dataframe(df_enade.head())
+                    if supabase_client:
+                        with st.spinner("Salvando ENADE no Supabase..."):
+                            delete_all_enade_from_supabase(supabase_client)
+                            save_enade_to_supabase(supabase_client, df_enade)
+                            st.session_state["df_enade"] = load_enade_from_supabase(supabase_client)
+                            st.success("✅ ENADE salvo com sucesso no banco!")
+                    else:
+                        st.session_state["df_enade"] = df_enade
+                        st.success("✅ ENADE processado localmente.")
+                else:
+                    st.error("Nenhum dado extraído. Precisamos calibrar o código com o seu PDF.")
+            else:
+                st.warning("Por favor, selecione o arquivo PDF do ENADE.")
+        
+        st.divider()
+        st.subheader("📝 Inserção Avançada de Notas (Planilha Interativa)")
+        st.info("Como as notas (médias e eixos) estão desenhadas nos gráficos dos PDFs como imagens, use esta planilha interativa abaixo para digitá-las. Você pode adicionar quantas linhas quiser (basta clicar na última linha vazia) e salvar tudo de uma vez!")
+        
+        if supabase_client:
+            # Cria um dataframe em branco com a estrutura desejada para inserção manual
+            df_template = pd.DataFrame(columns=["Ano", "Curso", "Eixo (Geral/Específico/Média)", "Nota IES", "Nota Brasil"])
+            
+            edited_df = st.data_editor(
+                df_template,
+                num_rows="dynamic",
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Ano": st.column_config.NumberColumn("Ano (Ex: 2019)", format="%d", step=1),
+                    "Curso": st.column_config.TextColumn("Nome do Curso"),
+                    "Eixo (Geral/Específico/Média)": st.column_config.SelectboxColumn(
+                        "Eixo Avaliado", 
+                        options=["Média Geral", "Formação Geral", "Conhecimento Específico"]
+                    ),
+                    "Nota IES": st.column_config.NumberColumn("Nota do Curso", min_value=0.0, max_value=100.0, format="%.1f"),
+                    "Nota Brasil": st.column_config.NumberColumn("Média Brasil", min_value=0.0, max_value=100.0, format="%.1f"),
+                }
+            )
+            
+            if st.button("💾 Salvar Notas Digitadas"):
+                # Filtra linhas vazias
+                valid_df = edited_df.dropna(subset=["Ano", "Curso", "Nota IES"])
+                if not valid_df.empty:
+                    new_records = []
+                    for _, row in valid_df.iterrows():
+                        # Cria os registros no formato do banco de dados
+                        indicador_nome = f"Nota: {row['Eixo (Geral/Específico/Média)']}"
+                        # Nota IES
+                        new_records.append({
+                            "indicador": indicador_nome,
+                            "ano": int(row["Ano"]),
+                            "curso": row["Curso"],
+                            "sub_categoria": "IES",
+                            "metrica": "Nota",
+                            "valor": float(row["Nota IES"])
+                        })
+                        # Nota Brasil (se preenchido)
+                        if pd.notna(row["Nota Brasil"]):
+                            new_records.append({
+                                "indicador": indicador_nome,
+                                "ano": int(row["Ano"]),
+                                "curso": row["Curso"],
+                                "sub_categoria": "Brasil",
+                                "metrica": "Nota",
+                                "valor": float(row["Nota Brasil"])
+                            })
+                    
+                    if save_enade_to_supabase(supabase_client, pd.DataFrame(new_records)):
+                        st.success(f"✅ {len(valid_df)} notas adicionadas ao banco de dados com sucesso!")
+                        st.session_state["df_enade"] = load_enade_from_supabase(supabase_client)
+                else:
+                    st.warning("Preencha ao menos uma linha com Ano, Curso e Nota IES antes de salvar.")
+                    
+    if st.session_state.get("df_enade") is not None and not st.session_state["df_enade"].empty:
+        df_enade = st.session_state["df_enade"]
+        st.divider()
+        st.subheader("📈 Visualização de Dados: ENADE")
+        
+        # Filtros de visualização
+        indicadores = df_enade["indicador"].dropna().unique().tolist()
+        indicador_sel = st.selectbox("Selecione o Indicador para visualizar", indicadores)
+        
+        df_ind = df_enade[df_enade["indicador"] == indicador_sel]
+        
+        if not df_ind.empty:
+            if "Média" in indicador_sel or "Nota" in indicador_sel:
+                st.info("Evolução das Médias (Notas da Prova)")
+                import plotly.express as px
+                fig = px.bar(df_ind, x="ano", y="valor", color="curso", barmode="group", 
+                             text="valor", title=f"{indicador_sel} por Curso e Ano",
+                             labels={"valor": "Nota", "ano": "Ano do ENADE"})
+                fig.update_traces(textposition='outside')
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                import plotly.express as px
+                # Verifica se há várias métricas
+                if len(df_ind["metrica"].unique()) > 1:
+                    fig = px.bar(df_ind, x="curso", y="valor", color="metrica", barmode="group",
+                                 title=f"{indicador_sel} por Curso", text="valor", facet_col="ano")
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    fig = px.bar(df_ind, x="curso", y="valor", color="sub_categoria", barmode="group",
+                                 title=f"{indicador_sel} por Curso", text="valor", facet_col="ano")
+                    st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("Nenhum dado encontrado para este indicador.")
+            
     if st.session_state["df_master"] is not None:
         st.divider()
         st.subheader("📋 Resumo dos Dados Carregados")
@@ -254,7 +461,7 @@ if menu == "📤 Enviar Arquivos":
                         except Exception as e:
                             st.error(f"Erro ao excluir dados: {e}")
 
-elif menu == "📊 Análise de Gráficos":
+elif menu == "📊 Análise CPA":
     if st.session_state["df_master"] is None:
         st.warning("⚠️ Nenhum dado carregado. Vá em 'Enviar Arquivos' primeiro.")
     else:
@@ -463,3 +670,18 @@ elif menu == "📊 Análise de Gráficos":
                 st.warning("⚠️ Selecione ao menos um campus.")
             else:
                 st.warning("⚠️ Selecione ao menos um segmento e uma opção de resposta.")
+
+elif menu == "📈 Análise ENADE":
+    st.header("📈 Análise de Indicadores do ENADE")
+    if st.session_state["df_enade"] is None:
+        st.warning("⚠️ Nenhum dado do ENADE carregado. Vá em 'Enviar Arquivos' primeiro.")
+    else:
+        df_enade = st.session_state["df_enade"]
+        if df_enade.empty:
+            st.warning("⚠️ O banco de dados do ENADE está vazio.")
+        else:
+            st.info("Aqui vamos exibir os gráficos de comparação de Médias IES/Brasil, População/Presentes e Auxílios.")
+            st.dataframe(df_enade)
+            
+            # TODO: Adicionar painéis de filtro laterais para o ENADE (Ano, Curso, etc)
+            # TODO: Adicionar lógica para montar os gráficos baseados nos metadados do ENADE
