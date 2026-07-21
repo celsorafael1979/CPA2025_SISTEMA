@@ -123,7 +123,9 @@ def load_enade_from_supabase(client: Client):
 
 def save_enade_to_supabase(client: Client, df: pd.DataFrame):
     try:
-        records = df.to_dict(orient="records")
+        import numpy as np
+        df_clean = df.replace({np.nan: None})
+        records = df_clean.to_dict(orient="records")
         batch_size = 1000
         for i in range(0, len(records), batch_size):
             batch = records[i:i+batch_size]
@@ -294,24 +296,28 @@ if menu == "📤 Enviar Arquivos":
             else: st.warning("Por favor, selecione ao menos um arquivo da CPA.")
 
     with tab_enade:
-        st.info("Arraste o arquivo PDF dos indicadores do ENADE.")
-        arquivos_enade = st.file_uploader("Selecione os PDFs do ENADE", type="pdf", accept_multiple_files=True, key="enade_up")
+        st.info("Arraste os relatórios do ENADE (PDF) ou a planilha formatada (XLSX).")
+        arquivos_enade = st.file_uploader("Selecione os arquivos do ENADE", type=["pdf", "xlsx"], accept_multiple_files=True, key="enade_up")
         
         if st.button("🚀 Processar ENADE", key="btn_enade"):
             if arquivos_enade:
-                st.info("Iniciando o processamento dos PDFs do ENADE...")
+                st.info("Iniciando o processamento dos arquivos do ENADE...")
                 all_enade = []
                 import os
                 os.makedirs("debug_pdfs", exist_ok=True)
                 for f in arquivos_enade:
                     try:
                         st.write(f"Processando arquivo: {f.name}...")
-                        # Salva o arquivo fisicamente para análise
                         with open(os.path.join("debug_pdfs", f.name), "wb") as f_out:
                             f_out.write(f.getvalue())
                         
-                        f.seek(0) # Volta o cursor do arquivo
-                        registros = parse_enade_pdf_bytes(f, f.name)
+                        f.seek(0)
+                        
+                        if f.name.lower().endswith(".xlsx"):
+                            from import_enade_excel import parse_enade_excel
+                            registros = parse_enade_excel(f)
+                        else:
+                            registros = parse_enade_pdf_bytes(f, f.name)
                         st.write(f"Arquivo {f.name} rendeu {len(registros)} registros.")
                         if registros:
                             all_enade.extend(registros)
@@ -325,9 +331,11 @@ if menu == "📤 Enviar Arquivos":
                     if supabase_client:
                         with st.spinner("Salvando ENADE no Supabase..."):
                             delete_all_enade_from_supabase(supabase_client)
-                            save_enade_to_supabase(supabase_client, df_enade)
-                            st.session_state["df_enade"] = load_enade_from_supabase(supabase_client)
-                            st.success("✅ ENADE salvo com sucesso no banco!")
+                            if save_enade_to_supabase(supabase_client, df_enade):
+                                st.session_state["df_enade"] = load_enade_from_supabase(supabase_client)
+                                st.success("✅ ENADE salvo com sucesso no banco!")
+                            else:
+                                st.error("❌ Houve um erro ao salvar no banco de dados.")
                     else:
                         st.session_state["df_enade"] = df_enade
                         st.success("✅ ENADE processado localmente.")
@@ -680,8 +688,145 @@ elif menu == "📈 Análise ENADE":
         if df_enade.empty:
             st.warning("⚠️ O banco de dados do ENADE está vazio.")
         else:
-            st.info("Aqui vamos exibir os gráficos de comparação de Médias IES/Brasil, População/Presentes e Auxílios.")
-            st.dataframe(df_enade)
+            from export_enade import gerar_excel_enade
             
-            # TODO: Adicionar painéis de filtro laterais para o ENADE (Ano, Curso, etc)
-            # TODO: Adicionar lógica para montar os gráficos baseados nos metadados do ENADE
+            st.download_button(
+                label="📊 Baixar Dados do ENADE (Formato Customizado)",
+                data=gerar_excel_enade(df_enade),
+                file_name="enade_dados_formatados.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            
+            def inferir_tipo(nome):
+                import unicodedata
+                n = str(nome)
+                # Resolve ligaduras como 'ﬁ' -> 'fi' e remove acentos
+                n = unicodedata.normalize('NFKC', n)
+                n = unicodedata.normalize('NFKD', n).encode('ASCII', 'ignore').decode('utf-8').upper()
+                
+                if "FILOSOFIA" in n or "LETRAS" in n or "PEDAGOGIA" in n or "MUSICA" in n or "QUIMICA" in n:
+                    if "ENGENHARIA" in n: return "Bacharelado"
+                    return "Licenciatura"
+                return "Bacharelado"
+            
+            df_enade["tipo"] = df_enade["curso"].apply(inferir_tipo)
+            
+            with st.sidebar:
+                st.subheader("Filtros ENADE")
+                indicadores_disp = sorted(df_enade["indicador"].dropna().unique().tolist())
+                ind_sel = st.selectbox("Selecione o Eixo (Indicador):", indicadores_disp)
+                
+                df_ind = df_enade[df_enade["indicador"] == ind_sel]
+                
+                tipos_disp = sorted(df_ind["tipo"].dropna().unique().tolist())
+                tipos_sel = st.multiselect("Selecione o Tipo:", tipos_disp, default=tipos_disp)
+                
+                df_filt = df_ind[df_ind["tipo"].isin(tipos_sel)]
+                
+                cursos_disp = sorted(df_filt["curso"].dropna().unique().tolist())
+                if ind_sel.startswith("2 - "):
+                    cursos_sel = st.multiselect("Selecione os Cursos:", cursos_disp, default=cursos_disp)
+                    df_filt = df_filt[df_filt["curso"].isin(cursos_sel)]
+                    cursos_sel_str = ", ".join(cursos_sel) if len(cursos_sel) <= 3 else f"{len(cursos_sel)} cursos selecionados"
+                else:
+                    cursos_sel = st.selectbox("Selecione o Curso:", cursos_disp)
+                    df_filt = df_filt[df_filt["curso"] == cursos_sel]
+                    cursos_sel_str = cursos_sel
+                
+                metricas_disp = sorted(df_filt["metrica"].dropna().unique().tolist())
+                if metricas_disp:
+                    metricas_sel = st.multiselect("Selecione a Métrica:", metricas_disp, default=metricas_disp)
+                    df_filt = df_filt[df_filt["metrica"].isin(metricas_sel)]
+                
+                tem_sub = df_filt["sub_categoria"].notna().any() and (df_filt["sub_categoria"] != "Percentual Concordância").all()
+                if tem_sub:
+                    perguntas = sorted([str(p) for p in df_filt["sub_categoria"].dropna().unique()])
+                    resp_sel = st.multiselect("Selecione a Resposta:", perguntas, default=perguntas)
+                    df_filt = df_filt[df_filt["sub_categoria"].isin(resp_sel)]
+                
+                st.subheader("Visualização")
+                tipo_grafico = st.radio("Tipo de Gráfico:", ["Barras", "Linhas"], horizontal=True)
+            
+            if df_filt.empty:
+                st.warning("Nenhum dado encontrado para os filtros selecionados.")
+            else:
+                df_plot = df_filt.copy().sort_values(by="ano")
+                df_plot['ano'] = df_plot['ano'].astype(str)
+                
+                if tem_sub:
+                    if tipo_grafico == "Barras":
+                        fig = px.bar(
+                            df_plot,
+                            x="ano",
+                            y="valor",
+                            color="metrica",
+                            facet_row="sub_categoria",
+                            barmode="group",
+                            title=f"{ind_sel} - {cursos_sel_str}",
+                            labels={"valor": "Valor", "metrica": "Métrica", "ano": "Ano", "sub_categoria": "Opção de Resposta"}
+                        )
+                    else:
+                        fig = px.line(
+                            df_plot,
+                            x="ano",
+                            y="valor",
+                            color="metrica",
+                            facet_row="sub_categoria",
+                            markers=True,
+                            title=f"{ind_sel} - {cursos_sel_str}",
+                            labels={"valor": "Valor", "metrica": "Métrica", "ano": "Ano", "sub_categoria": "Opção de Resposta"}
+                        )
+                    # Ajuste de layout para gráficos com subcategorias em linhas
+                    fig.update_layout(xaxis_type='category')
+                    # Esconde títulos repetitivos no eixo y de cada facet
+                    fig.for_each_yaxis(lambda y: y.update(title=''))
+                    fig.add_annotation(x=-0.06, y=0.5, text="Valor / %", textangle=-90, xref="paper", yref="paper")
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    if tipo_grafico == "Barras":
+                        if ind_sel.startswith("2 - "):
+                            fig = px.bar(
+                                df_plot,
+                                x="ano",
+                                y="valor",
+                                color="curso",
+                                barmode="group",
+                                title=f"{ind_sel}",
+                                labels={"valor": "Valor / Nota", "curso": "Curso", "ano": "Ano"}
+                            )
+                        else:
+                            fig = px.bar(
+                                df_plot,
+                                x="ano",
+                                y="valor",
+                                color="metrica",
+                                barmode="group",
+                                title=f"{ind_sel} - {cursos_sel_str}",
+                                labels={"valor": "Valor / Nota", "metrica": "Métrica", "ano": "Ano"}
+                            )
+                    else:
+                        if ind_sel.startswith("2 - "):
+                            fig = px.line(
+                                df_plot,
+                                x="ano",
+                                y="valor",
+                                color="curso",
+                                markers=True,
+                                title=f"{ind_sel}",
+                                labels={"valor": "Valor / Nota", "curso": "Curso", "ano": "Ano"}
+                            )
+                        else:
+                            fig = px.line(
+                                df_plot,
+                                x="ano",
+                                y="valor",
+                                color="metrica",
+                                markers=True,
+                                title=f"{ind_sel} - {cursos_sel_str}",
+                                labels={"valor": "Valor / Nota", "metrica": "Métrica", "ano": "Ano"}
+                            )
+                    fig.update_layout(xaxis_type='category')
+                    st.plotly_chart(fig, use_container_width=True)
+                
+                with st.expander("Ver Tabela de Dados"):
+                    st.dataframe(df_filt, use_container_width=True)
